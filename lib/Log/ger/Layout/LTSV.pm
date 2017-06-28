@@ -29,7 +29,8 @@ sub _encode {
     join("\t", @res);
 }
 
-sub _layouter {
+sub _layout {
+    my $pkg = shift;
     my ($conf, $msg0, $init_args, $lnum, $level) = @_;
 
     ($time_last, $time_now) = ($time_now, time());
@@ -137,21 +138,26 @@ sub _layouter {
             $msg->{$f} = $val;
         }
     }
-    __PACKAGE__->_encode($msg);
+    $pkg->_encode($msg);
 }
 
-sub get_hooks {
+sub _get_hooks {
+    my $pkg = shift;
     my %conf = @_;
 
     return {
         create_layouter => [
-            __PACKAGE__, 50,
+            $pkg, 50,
             sub {
                 my %args = @_;
 
-                [sub { _layouter(\%conf, @_) }];
+                [sub { $pkg->_layout(\%conf, @_) }];
             }],
     };
+}
+
+sub get_hooks {
+    __PACKAGE__->_get_hooks(@_);
 }
 
 1;
