@@ -7,10 +7,9 @@ use 5.010001;
 use strict;
 use warnings;
 
+use Devel::Caller::Util;
 use Log::ger ();
 use Time::HiRes qw(time);
-
-our $caller_depth_offset = 3;
 
 our $time_start = time();
 our $time_now   = $time_start;
@@ -34,8 +33,7 @@ sub _layout {
     my ($conf, $msg0, $init_args, $lnum, $level) = @_;
 
     ($time_last, $time_now) = ($time_now, time());
-
-    my @pmd; # per-message data
+    my %per_message_data;
 
     my $msg;
     if (ref $msg0 eq 'HASH') {
@@ -63,15 +61,33 @@ sub _layout {
     }
 
     if (my $ff = $conf->{add_special_fields}) {
+        my %mentioned_specials;
+        for my $f (keys %$ff) {
+            $mentioned_specials{ $ff->{$f} }++;
+        }
+
+        if (1 ||
+                $mentioned_specials{Class} ||
+                $mentioned_specials{File} ||
+                $mentioned_specials{Location} ||
+                $mentioned_specials{Line} ||
+                $mentioned_specials{Method} ||
+                0) {
+            $per_message_data{caller}  =
+                [Devel::Caller::Util::caller (1, 0, $conf->{packages_to_ignore}, $conf->{subroutines_to_ignore})];
+        }
+        if ($mentioned_specials{Stack_Trace}) {
+            $per_message_data{callers} =
+                [Devel::Caller::Util::callers(1, 0, $conf->{packages_to_ignore}, $conf->{subroutines_to_ignore})];
+        }
+
         for my $f (keys %$ff) {
             my $sf = $ff->{$f};
             my $val;
             if ($sf eq 'Category') {
                 $val = $init_args->{category};
             } elsif ($sf eq 'Class') {
-                $pmd[0] //= [caller($Log::ger::Caller_Depth_Offset+$caller_depth_offset)];
-                $pmd[1] //= [caller($Log::ger::Caller_Depth_Offset+$caller_depth_offset-1)];
-                $val = $pmd[0][0] // $pmd[1][0];
+                $val = $per_message_data{caller}[0];
             } elsif ($sf eq 'Date_Local') {
                 my @t = localtime($time_now);
                 $val = sprintf(
@@ -87,32 +103,24 @@ sub _layout {
                     $t[2], $t[1], $t[0],
                 );
             } elsif ($sf eq 'File') {
-                $pmd[0] //= [caller($Log::ger::Caller_Depth_Offset+$caller_depth_offset)];
-                $pmd[1] //= [caller($Log::ger::Caller_Depth_Offset+$caller_depth_offset-1)];
-                $val = $pmd[0][1] // $pmd[1][1];
+                $val = $per_message_data{caller}[1];
             } elsif ($sf eq 'Hostname') {
                 require Sys::Hostname;
                 $val = Sys::Hostname::hostname();
             } elsif ($sf eq 'Location') {
-                $pmd[0] //= [caller($Log::ger::Caller_Depth_Offset+$caller_depth_offset)];
-                $pmd[1] //= [caller($Log::ger::Caller_Depth_Offset+$caller_depth_offset-1)];
                 $val = sprintf(
                     "%s (%s:%d)",
-                    $pmd[0][3] // $pmd[1][3],
-                    $pmd[1][1],
-                    $pmd[1][2],
+                    $per_message_data{caller}[3],
+                    $per_message_data{caller}[1],
+                    $per_message_data{caller}[2],
                 );
             } elsif ($sf eq 'Line') {
-                $pmd[0] //= [caller($Log::ger::Caller_Depth_Offset+$caller_depth_offset)];
-                $pmd[1] //= [caller($Log::ger::Caller_Depth_Offset+$caller_depth_offset-1)];
-                $val = $pmd[1][2];
+                $val = $per_message_data{caller}[2];
             } elsif ($sf eq 'Message') {
                 $val = $msg0;
             } elsif ($sf eq 'Method') {
-                $pmd[0] //= [caller($Log::ger::Caller_Depth_Offset+$caller_depth_offset)];
-                $pmd[1] //= [caller($Log::ger::Caller_Depth_Offset+$caller_depth_offset-1)];
-                $val = $pmd[0][3] // $pmd[1][3];
-                $val =~ s/.+:://;
+                (my $sub = $per_message_data{caller}[3]) =~ s/.+:://;
+                $val = $sub;
             } elsif ($sf eq 'Level') {
                 $val = $level;
             } elsif ($sf eq 'PID') {
@@ -122,18 +130,8 @@ sub _layout {
             } elsif ($sf eq 'Elapsed_Last') {
                 $val = $time_now - $time_last;
             } elsif ($sf eq 'Stack_Trace') {
-                $pmd[2] //= do {
-                    my @st;
-                    my $i = $Log::ger::Caller_Depth_Offset+$caller_depth_offset-1;
-                    while (my @c = caller($i++)) {
-                        push @st, \@c;
-                    }
-                    \@st;
-                };
-                $val = '';
-                for my $frame (@{ $pmd[2] }) {
-                    $val .= "$frame->[3] ($frame->[1]:$frame->[2])\n";
-                }
+                $val = join(", ", map { "$_->[3] called at $_->[1] line $_->[2]" }
+                                @{ $per_message_data{callers} });
             } else { die "Unknown special field '$f'" }
             $msg->{$f} = $val;
         }
@@ -144,6 +142,15 @@ sub _layout {
 sub _get_hooks {
     my $pkg = shift;
     my %conf = @_;
+
+    $conf{packages_to_ignore} //= [
+        "Log::ger",
+        "Log::ger::Layout::LTSV",
+        "Try::Tiny",
+    ];
+    $conf{subroutines_to_ignore} //= [
+        "Log::ger::__ANON__",
+    ];
 
     return {
         create_layouter => [
@@ -226,6 +233,16 @@ Known special fields:
 Unknown special fields will cause the layouter to die.
 
 =head2 delete_fields
+
+=head2 packages_to_ignore
+
+Regex or arrayref. When producing caller or stack trace information, will pass
+this to L<Devel::Caller::Util>'s C<caller()> or C<callers()>.
+
+=head2 subroutines_to_ignore
+
+Regex or arrayref. When producing caller or stack trace information, will pass
+this to L<Devel::Caller::Util>'s C<caller()> or C<callers()>.
 
 
 =head1 SEE ALSO
