@@ -66,19 +66,25 @@ sub _layout {
             $mentioned_specials{ $ff->{$f} }++;
         }
 
-        if (1 ||
-                $mentioned_specials{Class} ||
+        if (
+            $mentioned_specials{Class} ||
                 $mentioned_specials{File} ||
-                $mentioned_specials{Location} ||
                 $mentioned_specials{Line} ||
-                $mentioned_specials{Method} ||
-                0) {
-            $per_message_data{caller}  =
+                $mentioned_specials{Location}
+            ) {
+            $per_message_data{caller0} =
+                [Devel::Caller::Util::caller (0, 0, $conf->{packages_to_ignore}, $conf->{subroutines_to_ignore})];
+        }
+        if (
+            $mentioned_specials{Location} ||
+                $mentioned_specials{Method}
+            ) {
+            $per_message_data{caller1} =
                 [Devel::Caller::Util::caller (1, 0, $conf->{packages_to_ignore}, $conf->{subroutines_to_ignore})];
         }
         if ($mentioned_specials{Stack_Trace}) {
             $per_message_data{callers} =
-                [Devel::Caller::Util::callers(1, 0, $conf->{packages_to_ignore}, $conf->{subroutines_to_ignore})];
+                [Devel::Caller::Util::callers(0, 0, $conf->{packages_to_ignore}, $conf->{subroutines_to_ignore})];
         }
 
         for my $f (keys %$ff) {
@@ -87,7 +93,7 @@ sub _layout {
             if ($sf eq 'Category') {
                 $val = $init_args->{category};
             } elsif ($sf eq 'Class') {
-                $val = $per_message_data{caller}[0];
+                $val = $per_message_data{caller0}[0];
             } elsif ($sf eq 'Date_Local') {
                 my @t = localtime($time_now);
                 $val = sprintf(
@@ -103,24 +109,23 @@ sub _layout {
                     $t[2], $t[1], $t[0],
                 );
             } elsif ($sf eq 'File') {
-                $val = $per_message_data{caller}[1];
+                $val = $per_message_data{caller0}[1];
             } elsif ($sf eq 'Hostname') {
                 require Sys::Hostname;
                 $val = Sys::Hostname::hostname();
             } elsif ($sf eq 'Location') {
                 $val = sprintf(
                     "%s (%s:%d)",
-                    $per_message_data{caller}[3],
-                    $per_message_data{caller}[1],
-                    $per_message_data{caller}[2],
+                    $per_message_data{caller1}[3] // '',
+                    $per_message_data{caller0}[1],
+                    $per_message_data{caller0}[2],
                 );
             } elsif ($sf eq 'Line') {
-                $val = $per_message_data{caller}[2];
+                $val = $per_message_data{caller0}[2];
             } elsif ($sf eq 'Message') {
                 $val = $msg0;
             } elsif ($sf eq 'Method') {
-                (my $sub = $per_message_data{caller}[3]) =~ s/.+:://;
-                $val = $sub;
+                $val = $per_message_data{caller1}[3] // '';
             } elsif ($sf eq 'Level') {
                 $val = $level;
             } elsif ($sf eq 'PID') {
@@ -147,9 +152,6 @@ sub _get_hooks {
         "Log::ger",
         "Log::ger::Layout::LTSV",
         "Try::Tiny",
-    ];
-    $conf{subroutines_to_ignore} //= [
-        "Log::ger::__ANON__",
     ];
 
     return {
